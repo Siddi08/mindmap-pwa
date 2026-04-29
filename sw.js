@@ -1,56 +1,57 @@
-const CACHE_NAME = 'mindmap-ops-v4';
+const CACHE = 'mindmap-ops-v4';
 
-const STATIC_ASSETS = [
-  '/mindmap-pwa/',
-  '/mindmap-pwa/index.html',
-  '/mindmap-pwa/manifest.json',
-  'https://cdn.tailwindcss.com',
-  'https://cdn.jsdelivr.net/npm/idb-keyval@6/dist/umd.js',
-  'https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js',
-  'https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap'
-];
-
-self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => {
-      return Promise.allSettled(
-        STATIC_ASSETS.map(url =>
-          cache.add(url).catch(err => console.warn('Cache miss for', url, err))
-        )
-      );
-    }).then(() => self.skipWaiting())
+// On install: cache everything
+self.addEventListener('install', e => {
+  self.skipWaiting(); // activate immediately, don't wait
+  e.waitUntil(
+    caches.open(CACHE).then(c => c.addAll([
+      '/mindmap-pwa/manifest.json',
+    ]).catch(() => {}))
   );
 });
 
-self.addEventListener('activate', event => {
-  event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(
-        keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))
-      )
-    ).then(() => self.clients.claim())
+// On activate: delete old caches immediately
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(() => self.clients.claim()) // take control of all tabs immediately
   );
 });
 
-self.addEventListener('fetch', event => {
-  if (event.request.method !== 'GET') return;
+// Fetch strategy:
+// - index.html  → network-first (always get latest when online, fallback to cache)
+// - everything else → cache-first (fonts, CDN assets)
+self.addEventListener('fetch', e => {
+  if (e.request.method !== 'GET') return;
 
-  event.respondWith(
-    caches.match(event.request).then(cached => {
-      if (cached) return cached;
+  const url = new URL(e.request.url);
+  const isHTML = url.pathname.endsWith('/') || url.pathname.endsWith('.html');
 
-      return fetch(event.request).then(response => {
-        if (!response || response.status !== 200 || response.type === 'opaque') {
-          return response;
-        }
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-        return response;
-      }).catch(() => {
-        if (event.request.destination === 'document') {
-          return caches.match('/mindmap-pwa/index.html');
-        }
-      });
-    })
-  );
+  if (isHTML) {
+    // Network-first: updates land immediately without any manual cache clear
+    e.respondWith(
+      fetch(e.request)
+        .then(res => {
+          const clone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
+          return res;
+        })
+        .catch(() => caches.match(e.request))
+    );
+  } else {
+    // Cache-first for assets
+    e.respondWith(
+      caches.match(e.request).then(cached => {
+        if (cached) return cached;
+        return fetch(e.request).then(res => {
+          if (res && res.status === 200) {
+            const clone = res.clone();
+            caches.open(CACHE).then(c => c.put(e.request, clone));
+          }
+          return res;
+        }).catch(() => cached);
+      })
+    );
+  }
 });
