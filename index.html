@@ -178,17 +178,17 @@
       margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
 
-    /* more btn */
+    /* more btn — always visible on phone */
     .ti-more {
-      width: 34px; height: 48px; flex-shrink: 0;
+      width: 36px; height: 48px; flex-shrink: 0;
       display: flex; align-items: center; justify-content: center;
       background: none; border: none; cursor: pointer;
       color: var(--text3); border-radius: 6px;
-      opacity: 0; transition: opacity .15s, color .15s;
+      opacity: 1; transition: color .15s;
+      -webkit-tap-highlight-color: transparent;
     }
-    .ti:hover .ti-more, .ti.sel .ti-more { opacity: 1; }
-    .ti-more:hover { color: var(--em); }
-    .ti-more svg { width: 14px; height: 14px; }
+    .ti-more:hover, .ti-more:active { color: var(--em); }
+    .ti-more svg { width: 15px; height: 15px; }
 
     .ti { touch-action: none; } /* we own all touch — enables drag vs scroll control */
     .ti.dragging { opacity: 0.2; pointer-events: none; }
@@ -670,55 +670,40 @@ function mkItem(item) {
   // Click (desktop)
   el.addEventListener('click', ev => { if (!dg.active) onItemClick(item); });
 
-  // Touch — we own all gestures (touch-action:none on .ti)
-  // • quick tap            → open/expand
-  // • hold 300ms + move    → drag reorder (haptic at 300ms)
-  // • hold 600ms no move   → context menu
-  let pressT = null, ctxT = null;
-  let pressX = 0, pressY = 0, prevY = 0;
-  let didDrag = false, openedCtx = false;
+  // Touch — touch-action:none so Android can't intercept
+  // • quick tap   → open/expand
+  // • hold 300ms  → drag mode (haptic), then slide to reorder
+  // • ⋮ button    → context menu (separate handler below)
+  let pressT = null;
+  let pressX = 0, pressY = 0, prevY = 0, didDrag = false;
 
   el.addEventListener('touchstart', ev => {
     if (ev.target.closest('.ti-more, .ti-chev')) return;
     const t = ev.touches[0];
     pressX = t.clientX; pressY = t.clientY; prevY = t.clientY;
-    didDrag = false; openedCtx = false; el._dragReady = false;
+    didDrag = false; el._dragReady = false;
 
     pressT = setTimeout(() => {
       if (!dg.active) {
         el._dragReady = true;
         el.classList.add('drag-ready');
-        if (navigator.vibrate) navigator.vibrate(18);
+        if (navigator.vibrate) navigator.vibrate(22);
       }
     }, 300);
-
-    ctxT = setTimeout(() => {
-      if (!dg.active && !didDrag && el._dragReady) {
-        openedCtx = true;
-        el._dragReady = false;
-        el.classList.remove('drag-ready');
-        selId = item.id; render();
-        const r = el.getBoundingClientRect();
-        showCtx(r.right - 44, r.top + r.height / 2, item.id);
-        if (navigator.vibrate) navigator.vibrate(35);
-      }
-    }, 650);
   }, { passive: true });
 
   el.addEventListener('touchmove', ev => {
-    ev.preventDefault(); // safe — touch-action:none means browser won't scroll anyway
+    ev.preventDefault();
     const t = ev.touches[0];
     const deltaY = prevY - t.clientY;
     prevY = t.clientY;
     const dy = Math.abs(t.clientY - pressY);
     const dx = Math.abs(t.clientX - pressX);
 
-    // Route to drag handler if already dragging
     if (dg.active) { moveDrag(t.clientY, t.clientX); return; }
 
-    // Drag-ready + enough vertical movement → start drag
     if (el._dragReady && dy > 8) {
-      clearTimeout(ctxT);
+      clearTimeout(pressT);
       el._dragReady = false;
       el.classList.remove('drag-ready');
       didDrag = true;
@@ -726,19 +711,18 @@ function mkItem(item) {
       return;
     }
 
-    // Not drag-ready yet and finger moved → cancel timers, scroll list manually
     if (!el._dragReady && (dy > 6 || dx > 6)) {
-      clearTimeout(pressT); clearTimeout(ctxT);
+      clearTimeout(pressT);
       document.getElementById('tree-list').scrollTop += deltaY;
     }
   }, { passive: false });
 
   el.addEventListener('touchend', () => {
-    clearTimeout(pressT); clearTimeout(ctxT);
+    clearTimeout(pressT);
     el._dragReady = false;
     el.classList.remove('drag-ready');
     if (dg.active) { endDrag(); return; }
-    if (!didDrag && !openedCtx) onItemClick(item);
+    if (!didDrag) onItemClick(item);
   });
 
   el.addEventListener('contextmenu', ev => {
