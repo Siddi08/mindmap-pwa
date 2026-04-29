@@ -190,16 +190,8 @@
     .ti-more:hover { color: var(--em); }
     .ti-more svg { width: 14px; height: 14px; }
 
-    /* drag handle */
-    .ti-drag {
-      width: 20px; height: 48px; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center;
-      color: var(--text3); cursor: grab; touch-action: none;
-      opacity: 0; transition: opacity .15s;
-    }
-    .ti:hover .ti-drag, .ti.sel .ti-drag { opacity: 1; }
-    .ti-drag svg { width: 12px; height: 12px; }
     .ti.dragging { opacity: 0.2; pointer-events: none; }
+    .ti.drag-ready { background: rgba(16,185,129,0.06); transform: scale(0.99); }
 
     /* drop indicator line */
     #drop-line {
@@ -674,35 +666,65 @@ function mkItem(item) {
   });
   el.appendChild(more);
 
-  // Drag handle
-  const dh = document.createElement('div');
-  dh.className = 'ti-drag';
-  dh.setAttribute('aria-label', 'Drag to reorder');
-  dh.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="19" r="1" fill="currentColor"/><circle cx="15" cy="5" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="19" r="1" fill="currentColor"/></svg>`;
-  dh.addEventListener('mousedown', ev => { ev.stopPropagation(); startDrag(item.id, ev.clientY, ev.clientX); });
-  dh.addEventListener('touchstart', ev => { ev.stopPropagation(); ev.preventDefault(); const t = ev.touches[0]; startDrag(item.id, t.clientY, t.clientX); }, { passive: false });
-  el.appendChild(dh);
+  // Click (desktop)
+  el.addEventListener('click', ev => { if (!dg.active) onItemClick(item); });
 
-  // Click
-  el.addEventListener('click', () => onItemClick(item));
-
-  // Long press (mobile)
-  let lpT = null, lpX = 0, lpY = 0;
+  // Touch: hold 250ms = drag, hold 600ms = context menu, quick tap = open
+  let pressT = null, ctxT = null, pressX = 0, pressY = 0, didDrag = false;
   el.addEventListener('touchstart', ev => {
+    if (ev.target.closest('.ti-more, .ti-chev')) return;
     const t = ev.touches[0];
-    lpX = t.clientX; lpY = t.clientY;
-    lpT = setTimeout(() => {
-      selId = item.id; render();
-      const r = el.getBoundingClientRect();
-      showCtx(r.right - 44, r.top + r.height / 2, item.id);
-      if (navigator.vibrate) navigator.vibrate(25);
-    }, 500);
+    pressX = t.clientX; pressY = t.clientY; didDrag = false;
+
+    pressT = setTimeout(() => {
+      el.classList.add('drag-ready');
+      if (navigator.vibrate) navigator.vibrate(18);
+      // Once drag-ready, next touchmove will start the actual drag
+      el._dragReady = true;
+    }, 250);
+
+    ctxT = setTimeout(() => {
+      if (el._dragReady && !dg.active) {
+        el.classList.remove('drag-ready');
+        el._dragReady = false;
+        clearTimeout(pressT);
+        selId = item.id; render();
+        const r = el.getBoundingClientRect();
+        showCtx(r.right - 44, r.top + r.height / 2, item.id);
+        if (navigator.vibrate) navigator.vibrate(30);
+      }
+    }, 600);
   }, { passive: true });
+
   el.addEventListener('touchmove', ev => {
     const t = ev.touches[0];
-    if (Math.abs(t.clientX - lpX) > 8 || Math.abs(t.clientY - lpY) > 8) clearTimeout(lpT);
+    const dx = Math.abs(t.clientX - pressX);
+    const dy = Math.abs(t.clientY - pressY);
+
+    if (el._dragReady && !dg.active && dy > 4) {
+      // Crossed movement threshold while drag-ready → start drag
+      el._dragReady = false;
+      el.classList.remove('drag-ready');
+      clearTimeout(ctxT);
+      didDrag = true;
+      startDrag(item.id, t.clientY, t.clientX);
+      return;
+    }
+
+    // Cancel press timers if moved before drag-ready
+    if (!el._dragReady && (dx > 8 || dy > 8)) {
+      clearTimeout(pressT); clearTimeout(ctxT);
+    }
   }, { passive: true });
-  el.addEventListener('touchend', () => clearTimeout(lpT));
+
+  el.addEventListener('touchend', ev => {
+    clearTimeout(pressT); clearTimeout(ctxT);
+    el._dragReady = false;
+    el.classList.remove('drag-ready');
+    if (dg.active) { endDrag(); return; }
+    if (!didDrag) onItemClick(item);
+  });
+
   el.addEventListener('contextmenu', ev => {
     ev.preventDefault();
     selId = item.id; render();
