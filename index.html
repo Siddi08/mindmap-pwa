@@ -190,6 +190,46 @@
     .ti-more:hover { color: var(--em); }
     .ti-more svg { width: 14px; height: 14px; }
 
+    /* drag handle */
+    .ti-drag {
+      width: 20px; height: 48px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text3); cursor: grab; touch-action: none;
+      opacity: 0; transition: opacity .15s;
+    }
+    .ti:hover .ti-drag, .ti.sel .ti-drag { opacity: 1; }
+    .ti-drag svg { width: 12px; height: 12px; }
+    .ti.dragging { opacity: 0.2; pointer-events: none; }
+
+    /* drop indicator line */
+    #drop-line {
+      position: fixed; left: 0; right: 0; height: 2px;
+      background: var(--em); pointer-events: none;
+      z-index: 200; display: none;
+      box-shadow: 0 0 8px rgba(16,185,129,0.7);
+      border-radius: 1px;
+    }
+    #drop-line::before {
+      content: ''; position: absolute; left: 12px;
+      top: 50%; transform: translateY(-50%);
+      width: 7px; height: 7px; background: var(--em); border-radius: 50%;
+    }
+
+    /* drag ghost */
+    #drag-ghost {
+      position: fixed; z-index: 300; pointer-events: none;
+      background: var(--bg-panel); border: 1px solid var(--em);
+      border-radius: 8px; padding: 0 14px;
+      display: none; align-items: center; gap: 10px;
+      height: 46px; max-width: 260px;
+      box-shadow: 0 10px 36px rgba(0,0,0,0.65), 0 0 0 1px rgba(16,185,129,0.2);
+      font-family: var(--fh); font-weight: 600; font-size: 14px; color: var(--em);
+      transform: scale(1.04) rotate(-1deg);
+      transition: transform .1s;
+    }
+    #drag-ghost svg { width: 17px; height: 17px; flex-shrink: 0; }
+    #drag-ghost span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
     /* ── EMPTY STATE ─────────────────────────────────── */
     #empty-state {
       flex: 1; display: none; flex-direction: column;
@@ -437,6 +477,11 @@
   </div>
 </div>
 
+<div id="drop-line"></div>
+<div id="drag-ghost">
+  <svg id="ghost-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></svg>
+  <span id="ghost-label"></span>
+</div>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/idb-keyval@6/dist/umd.js"></script>
@@ -460,11 +505,7 @@ let _c = Date.now();
 const uid = () => 'i' + (++_c);
 
 function children(pid) {
-  return items.filter(i => i.parentId === (pid || null))
-    .sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-    });
+  return items.filter(i => i.parentId === (pid || null));
 }
 
 function ancestors(id) {
@@ -632,6 +673,15 @@ function mkItem(item) {
     showCtx(ev.clientX, ev.clientY, item.id);
   });
   el.appendChild(more);
+
+  // Drag handle
+  const dh = document.createElement('div');
+  dh.className = 'ti-drag';
+  dh.setAttribute('aria-label', 'Drag to reorder');
+  dh.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="5" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="19" r="1" fill="currentColor"/><circle cx="15" cy="5" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="19" r="1" fill="currentColor"/></svg>`;
+  dh.addEventListener('mousedown', ev => { ev.stopPropagation(); startDrag(item.id, ev.clientY, ev.clientX); });
+  dh.addEventListener('touchstart', ev => { ev.stopPropagation(); ev.preventDefault(); const t = ev.touches[0]; startDrag(item.id, t.clientY, t.clientX); }, { passive: false });
+  el.appendChild(dh);
 
   // Click
   el.addEventListener('click', () => onItemClick(item));
@@ -894,6 +944,129 @@ document.addEventListener('keydown', ev => {
     if (it?.type === 'folder') toggleFolder(selId);
   }
 });
+
+// ─── Drag & Drop ──────────────────────────────────────
+const dg = { active: false, itemId: null, startY: 0, startX: 0, dropBeforeId: undefined, dropParentId: undefined };
+
+function startDrag(itemId, clientY, clientX) {
+  const item = items.find(i => i.id === itemId);
+  if (!item) return;
+  dg.active = true;
+  dg.itemId = itemId;
+  dg.startY = clientY;
+  dg.startX = clientX;
+
+  // Style ghost
+  const ghost = document.getElementById('drag-ghost');
+  const iconSvg = document.getElementById('ghost-icon');
+  document.getElementById('ghost-label').textContent = item.name;
+  if (item.type === 'folder') {
+    iconSvg.innerHTML = `<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>`;
+  } else {
+    iconSvg.innerHTML = `<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>`;
+  }
+  ghost.style.display = 'flex';
+  ghost.style.top = `${clientY - 23}px`;
+  ghost.style.left = `${clientX - 80}px`;
+
+  // Dim original
+  const el = document.querySelector(`.ti[data-id="${itemId}"]`);
+  if (el) el.classList.add('dragging');
+
+  if (navigator.vibrate) navigator.vibrate(20);
+}
+
+function moveDrag(clientY, clientX) {
+  if (!dg.active) return;
+
+  const ghost = document.getElementById('drag-ghost');
+  ghost.style.top = `${clientY - 23}px`;
+  ghost.style.left = `${clientX - 80}px`;
+
+  // Find drop position from all visible non-dragged items
+  const allEls = [...document.querySelectorAll(`.ti:not(.dragging)`)];
+  const line = document.getElementById('drop-line');
+
+  if (allEls.length === 0) {
+    dg.dropBeforeId = null;
+    dg.dropParentId = null;
+    line.style.display = 'none';
+    return;
+  }
+
+  let dropBeforeId = null;
+  let dropParentId = null;
+  let lineY = null;
+
+  // Check above first item
+  const firstRect = allEls[0].getBoundingClientRect();
+  if (clientY < firstRect.top + firstRect.height / 2) {
+    dropBeforeId = allEls[0].dataset.id;
+    dropParentId = items.find(i => i.id === dropBeforeId)?.parentId ?? null;
+    lineY = firstRect.top;
+  } else {
+    let placed = false;
+    for (let i = 0; i < allEls.length - 1; i++) {
+      const r = allEls[i].getBoundingClientRect();
+      const rn = allEls[i + 1].getBoundingClientRect();
+      if (clientY >= r.top + r.height / 2 && clientY < rn.top + rn.height / 2) {
+        dropBeforeId = allEls[i + 1].dataset.id;
+        dropParentId = items.find(i => i.id === dropBeforeId)?.parentId ?? null;
+        lineY = rn.top;
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      // After last item
+      const lastEl = allEls[allEls.length - 1];
+      const lastRect = lastEl.getBoundingClientRect();
+      const lastItem = items.find(i => i.id === lastEl.dataset.id);
+      dropBeforeId = null;
+      dropParentId = lastItem?.parentId ?? null;
+      lineY = lastRect.bottom;
+    }
+  }
+
+  dg.dropBeforeId = dropBeforeId;
+  dg.dropParentId = dropParentId;
+
+  line.style.display = 'block';
+  line.style.top = `${lineY - 1}px`;
+}
+
+function endDrag() {
+  if (!dg.active) return;
+  document.getElementById('drop-line').style.display = 'none';
+  document.getElementById('drag-ghost').style.display = 'none';
+  document.querySelectorAll('.ti.dragging').forEach(el => el.classList.remove('dragging'));
+
+  if (dg.itemId && dg.dropBeforeId !== dg.itemId) {
+    const dragged = items.find(i => i.id === dg.itemId);
+    if (dragged) {
+      items = items.filter(i => i.id !== dg.itemId);
+      dragged.parentId = dg.dropParentId ?? null;
+      if (dg.dropBeforeId === null) {
+        items.push(dragged);
+      } else {
+        const idx = items.findIndex(i => i.id === dg.dropBeforeId);
+        items.splice(idx === -1 ? items.length : idx, 0, dragged);
+      }
+      schedSave();
+    }
+  }
+
+  dg.active = false; dg.itemId = null; dg.dropBeforeId = undefined; dg.dropParentId = undefined;
+  render();
+}
+
+// Global mouse/touch listeners for drag
+window.addEventListener('mousemove', ev => { if (dg.active) moveDrag(ev.clientY, ev.clientX); });
+window.addEventListener('mouseup',   () => { if (dg.active) endDrag(); });
+window.addEventListener('touchmove', ev => {
+  if (dg.active) { ev.preventDefault(); const t = ev.touches[0]; moveDrag(t.clientY, t.clientX); }
+}, { passive: false });
+window.addEventListener('touchend',  () => { if (dg.active) endDrag(); });
 
 // ─── Toast ────────────────────────────────────────────
 let tT = null;
