@@ -190,8 +190,9 @@
     .ti-more:hover { color: var(--em); }
     .ti-more svg { width: 14px; height: 14px; }
 
+    .ti { touch-action: none; } /* we own all touch — enables drag vs scroll control */
     .ti.dragging { opacity: 0.2; pointer-events: none; }
-    .ti.drag-ready { background: rgba(16,185,129,0.06); transform: scale(0.99); }
+    .ti.drag-ready { background: rgba(16,185,129,0.07); }
 
     /* drop indicator line */
     #drop-line {
@@ -669,60 +670,75 @@ function mkItem(item) {
   // Click (desktop)
   el.addEventListener('click', ev => { if (!dg.active) onItemClick(item); });
 
-  // Touch: hold 250ms = drag, hold 600ms = context menu, quick tap = open
-  let pressT = null, ctxT = null, pressX = 0, pressY = 0, didDrag = false;
+  // Touch — we own all gestures (touch-action:none on .ti)
+  // • quick tap            → open/expand
+  // • hold 300ms + move    → drag reorder (haptic at 300ms)
+  // • hold 600ms no move   → context menu
+  let pressT = null, ctxT = null;
+  let pressX = 0, pressY = 0, prevY = 0;
+  let didDrag = false, openedCtx = false;
+
   el.addEventListener('touchstart', ev => {
     if (ev.target.closest('.ti-more, .ti-chev')) return;
     const t = ev.touches[0];
-    pressX = t.clientX; pressY = t.clientY; didDrag = false;
+    pressX = t.clientX; pressY = t.clientY; prevY = t.clientY;
+    didDrag = false; openedCtx = false; el._dragReady = false;
 
     pressT = setTimeout(() => {
-      el.classList.add('drag-ready');
-      if (navigator.vibrate) navigator.vibrate(18);
-      // Once drag-ready, next touchmove will start the actual drag
-      el._dragReady = true;
-    }, 250);
+      if (!dg.active) {
+        el._dragReady = true;
+        el.classList.add('drag-ready');
+        if (navigator.vibrate) navigator.vibrate(18);
+      }
+    }, 300);
 
     ctxT = setTimeout(() => {
-      if (el._dragReady && !dg.active) {
-        el.classList.remove('drag-ready');
+      if (!dg.active && !didDrag && el._dragReady) {
+        openedCtx = true;
         el._dragReady = false;
-        clearTimeout(pressT);
+        el.classList.remove('drag-ready');
         selId = item.id; render();
         const r = el.getBoundingClientRect();
         showCtx(r.right - 44, r.top + r.height / 2, item.id);
-        if (navigator.vibrate) navigator.vibrate(30);
+        if (navigator.vibrate) navigator.vibrate(35);
       }
-    }, 600);
+    }, 650);
   }, { passive: true });
 
   el.addEventListener('touchmove', ev => {
+    ev.preventDefault(); // safe — touch-action:none means browser won't scroll anyway
     const t = ev.touches[0];
-    const dx = Math.abs(t.clientX - pressX);
+    const deltaY = prevY - t.clientY;
+    prevY = t.clientY;
     const dy = Math.abs(t.clientY - pressY);
+    const dx = Math.abs(t.clientX - pressX);
 
-    if (el._dragReady && !dg.active && dy > 4) {
-      // Crossed movement threshold while drag-ready → start drag
+    // Route to drag handler if already dragging
+    if (dg.active) { moveDrag(t.clientY, t.clientX); return; }
+
+    // Drag-ready + enough vertical movement → start drag
+    if (el._dragReady && dy > 8) {
+      clearTimeout(ctxT);
       el._dragReady = false;
       el.classList.remove('drag-ready');
-      clearTimeout(ctxT);
       didDrag = true;
       startDrag(item.id, t.clientY, t.clientX);
       return;
     }
 
-    // Cancel press timers if moved before drag-ready
-    if (!el._dragReady && (dx > 8 || dy > 8)) {
+    // Not drag-ready yet and finger moved → cancel timers, scroll list manually
+    if (!el._dragReady && (dy > 6 || dx > 6)) {
       clearTimeout(pressT); clearTimeout(ctxT);
+      document.getElementById('tree-list').scrollTop += deltaY;
     }
-  }, { passive: true });
+  }, { passive: false });
 
-  el.addEventListener('touchend', ev => {
+  el.addEventListener('touchend', () => {
     clearTimeout(pressT); clearTimeout(ctxT);
     el._dragReady = false;
     el.classList.remove('drag-ready');
     if (dg.active) { endDrag(); return; }
-    if (!didDrag) onItemClick(item);
+    if (!didDrag && !openedCtx) onItemClick(item);
   });
 
   el.addEventListener('contextmenu', ev => {
@@ -1082,12 +1098,10 @@ function endDrag() {
   render();
 }
 
-// Global mouse/touch listeners for drag
+// Global mouse listeners for drag (desktop)
 window.addEventListener('mousemove', ev => { if (dg.active) moveDrag(ev.clientY, ev.clientX); });
 window.addEventListener('mouseup',   () => { if (dg.active) endDrag(); });
-window.addEventListener('touchmove', ev => {
-  if (dg.active) { ev.preventDefault(); const t = ev.touches[0]; moveDrag(t.clientY, t.clientX); }
-}, { passive: false });
+// Touch end safety net (touchmove handled per-item so Android can't intercept)
 window.addEventListener('touchend',  () => { if (dg.active) endDrag(); });
 
 // ─── Toast ────────────────────────────────────────────
